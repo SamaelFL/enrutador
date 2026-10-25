@@ -18,7 +18,7 @@ jobs:
     env:
       TAG: ${{ inputs.version || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Notas de la versión (del CHANGELOG)
         run: |
