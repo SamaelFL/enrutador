@@ -1,0 +1,19 @@
+{
+  "name": "enrutador",
+  "version": "0.1.0",
+  "description": "Baja de Opus a Sonnet las tareas fáciles y ajusta el esfuerzo; ante la duda se queda en Opus.",
+  "userConfig": {
+    "minutosCacheFria": {
+      "type": "number",
+      "title": "Minutos para dar la caché por fría",
+      "description": "Si pasó este tiempo desde la última llamada, la caché ya no cuenta y puede volver a bajar de modelo o de esfuerzo.",
+      "default": 60
+    },
+    "modeloLigero": {
+      "type": "string",
+      "title": "Modelo ligero",
+      "description": "Id del modelo al que baja. Vacío: el de Opus con 'sonnet' en lugar de 'opus' (claude-opus-5-5 → claude-sonnet-5-5).",
+      "default": ""
+    }
+  }
+}

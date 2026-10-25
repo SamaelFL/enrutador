@@ -1,0 +1,5 @@
+{
+  "name": "enrutador",
+  "owner": { "name": "SamaelFL" },
+  "plugins": [{ "name": "enrutador", "source": "./" }]
+}
