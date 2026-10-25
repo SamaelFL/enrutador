@@ -1,7 +1,7 @@
 {
   "name": "enrutador",
-  "version": "0.1.0",
-  "description": "Baja de Opus a Sonnet las tareas fáciles y ajusta el esfuerzo; ante la duda se queda en Opus.",
+  "version": "0.2.0",
+  "description": "Compacta la sesión antes de una tarea nueva cuando el contexto es grande, corre los subagentes en Sonnet y baja de Opus a Sonnet lo fácil; ante la duda se queda en Opus.",
   "userConfig": {
     "minutosCacheFria": {
       "type": "number",
@@ -14,6 +14,18 @@
       "title": "Modelo ligero",
       "description": "Id del modelo al que baja. Vacío: el de Opus con 'sonnet' en lugar de 'opus' (claude-opus-5-5 → claude-sonnet-5-5).",
       "default": ""
+    },
+    "compactarEn": {
+      "type": "number",
+      "title": "Compactar al pasar de (tokens)",
+      "description": "Antes de una tarea nueva, si el contexto pasa de este tamaño, compacta la sesión. 0 lo apaga.",
+      "default": 200000
+    },
+    "subagentesEnOpus": {
+      "type": "string",
+      "title": "Subagentes que se quedan en Opus",
+      "description": "Tipos de subagente, separados por coma, que no bajan a Sonnet. Los demás corren en Sonnet.",
+      "default": "Plan"
     }
   }
 }

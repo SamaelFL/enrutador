@@ -454,6 +454,9 @@ type Politica = {
   compactarEn?: number
   // Solo compactar en el primer paso de una tarea nueva (no a media tarea ni en un "dale").
   soloTareaNueva?: boolean
+  // Compactar entre turnos (al terminar el anterior), sea o no tarea nueva: lo que hace la v2,
+  // porque Claude Code no deja compactar cuando ya llegó el pedido.
+  entreTurnos?: boolean
 }
 
 const RESUMEN_TOKENS = 12000 // tamaño del resumen que deja una compactación
@@ -472,6 +475,7 @@ const VARIANTES: Politica[] = [
   { nombre: 'Compactar a 200k + subagentes en Sonnet', cuidarCache: true, dudaSuave: false, compactarEn: 200000, subagentesSonnet: true },
   { nombre: 'Compactar a 200k solo al iniciar tarea nueva', cuidarCache: true, dudaSuave: false, compactarEn: 200000, soloTareaNueva: true },
   { nombre: 'Lo anterior + subagentes en Sonnet', cuidarCache: true, dudaSuave: false, compactarEn: 200000, soloTareaNueva: true, subagentesSonnet: true },
+  { nombre: 'Enrutador v2 (compacta entre turnos a 200k + subagentes en Sonnet)', cuidarCache: true, dudaSuave: false, compactarEn: 200000, entreTurnos: true, subagentesSonnet: true },
 ]
 function dudar(nivel: Nivel, seguro: boolean, pol: Politica): Nivel {
   if (seguro || !pol.dudaSuave) return aplicarDuda(nivel, seguro)
@@ -621,7 +625,9 @@ function simular(
     if (pol.compactarEn !== undefined) {
       const contexto = uso.entrada + uso.lectura + uso.escritura5m + uso.escritura1h
       if (contextoBase < 0) contextoBase = contexto
-      const puede = !pol.soloTareaNueva || (turno !== null && turno.primerPaso && turno.nueva)
+      const puede = pol.entreTurnos
+        ? turno !== null && turno.primerPaso
+        : !pol.soloTareaNueva || (turno !== null && turno.primerPaso && turno.nueva)
       if (puede && contexto - recorte > pol.compactarEn) {
         // Compactar: leer todo, escribir el resumen y reescribir la caché con base + resumen.
         const p = PRECIOS[familia]

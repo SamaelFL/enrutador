@@ -2,7 +2,13 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import {
   DESTINO,
+  INSTRUCCIONES_COMPACTAR,
   aplicarDuda,
+  debeCompactar,
+  leerSigue,
+  miles,
+  subagenteASonnet,
+  tiposEnOpus,
   debeEscalar,
   enElTope,
   esEsfuerzo,
@@ -41,6 +47,9 @@ type Estadisticas = {
   escalados: number
   retenidosPorCache: number
   porModelo: Record<string, UsoModelo>
+  compactaciones: number
+  tokensCompactados: number
+  pasosSubagenteSonnet: number
 }
 
 const estadisticasVacias = (): Estadisticas => ({
@@ -48,6 +57,9 @@ const estadisticasVacias = (): Estadisticas => ({
   escalados: 0,
   retenidosPorCache: 0,
   porModelo: {},
+  compactaciones: 0,
+  tokensCompactados: 0,
+  pasosSubagenteSonnet: 0,
 })
 
 // Estado de la sesión. Un reload del módulo lo arranca de cero (las
@@ -60,6 +72,10 @@ type Estado = {
   ultimoEnviado: Enviado | null
   planActivo: boolean
   stats: Estadisticas
+  // Tipo de cada subagente por id; null si no es uno de la lista (una bifurcación del engine).
+  tipos: Map<string, string | null>
+  // El pedido del turno en curso empezó con !sigue: no compactar al terminarlo.
+  sigue: boolean
 }
 
 const st: Estado = {
@@ -70,6 +86,8 @@ const st: Estado = {
   ultimoEnviado: null,
   planActivo: false,
   stats: estadisticasVacias(),
+  tipos: new Map(),
+  sigue: false,
 }
 
 async function guardarStats($: EngineInterface): Promise<void> {
@@ -111,6 +129,42 @@ async function clasificar($: EngineInterface, texto: string): Promise<Decision> 
   return { nivel, motivo: leido.seguro ? 'clasificador' : 'clasificador, con dudas', forzado: false }
 }
 
+async function tipoDe($: EngineInterface, agentId: string): Promise<string | null> {
+  if (st.tipos.has(agentId)) return st.tipos.get(agentId) ?? null
+  try {
+    for (const a of await $.agent.list()) st.tipos.set(a.id, a.type)
+  } catch {
+    // sin lista: no se toca
+  }
+  if (!st.tipos.has(agentId)) st.tipos.set(agentId, null)
+  return st.tipos.get(agentId) ?? null
+}
+
+// Al terminar un turno, si el contexto ya pasó el umbral, compacta para que lo que sigue no
+// relea toda la conversación en cada paso. Claude Code no deja compactar cuando llega el
+// pedido (ese turno ya está apartado), así que se hace al cerrar el anterior.
+async function quizasCompactar($: EngineInterface, umbral: number): Promise<void> {
+  let tokens: number | undefined
+  try {
+    tokens = (await $.session.usage()).context.tokens
+  } catch {
+    return
+  }
+  if (!debeCompactar({ tokens, umbral, plan: st.planActivo, sigue: st.sigue })) return
+  try {
+    const r = await $.session.compact({ instructions: INSTRUCCIONES_COMPACTAR })
+    if (r.skip !== undefined) return
+    st.stats.compactaciones += 1
+    st.stats.tokensCompactados += tokens ?? 0
+    // La compactación ya reescribió la caché: cambiar de modelo ahora no cuesta de más.
+    st.ultimoEnviado = null
+    await guardarStats($)
+    $.ui.toast(`enrutador: compacté la sesión (iba en ${miles(tokens ?? 0)} tokens). Si lo siguiente depende de esto, empieza el pedido con !sigue.`)
+  } catch {
+    // si no se pudo (un turno corriendo, un hook que lo vetó), sigue como estaba
+  }
+}
+
 function escalar($: EngineInterface, motivo: string): void {
   const t = st.actual
   if (t === null || t.escalado !== undefined) return
@@ -126,6 +180,8 @@ const yaEnAlto = (t: Turno): boolean =>
 export const register: Register = (on, options) => {
   const minutosFria = Number(options.minutosCacheFria ?? 60)
   const modeloLigero = String(options.modeloLigero ?? '')
+  const compactarEn = Number(options.compactarEn ?? 200000)
+  const enOpus = tiposEnOpus(String(options.subagentesEnOpus ?? 'Plan'))
 
   st.pendiente = null
   st.actual = null
@@ -161,6 +217,10 @@ export const register: Register = (on, options) => {
   // 1. Clasificar el pedido antes de que empiece el turno.
   on('prompt.submit', async ($, e, next) => {
     if (!st.activo || e.turnId !== undefined) return next(e)
+
+    const sigue = leerSigue(e.text)
+    st.sigue = sigue.sigue
+    if (sigue.sigue) e = { ...e, text: sigue.texto }
 
     const forzado = leerForzado(e.text)
     if (forzado !== null) {
@@ -242,6 +302,16 @@ export const register: Register = (on, options) => {
     const esfuerzoSesion = esEsfuerzo(e.effort) ? e.effort : undefined
     const t = st.actual
 
+    // Subagentes: cada uno arranca con su propio contexto, así que bajarlo a Sonnet no
+    // reescribe la caché de la sesión. Los tipos de subagentesEnOpus (Plan) se quedan.
+    if (!esPrincipal && e.agentId !== undefined && st.activo && familiaSesion === 'opus') {
+      if (subagenteASonnet(await tipoDe($, e.agentId), enOpus)) {
+        st.stats.pasosSubagenteSonnet += 1
+        return yield* next({ ...e, model: idLigero(e.model, modeloLigero) })
+      }
+      return yield* next(e)
+    }
+
     if (!esPrincipal || !st.activo || t === null || familiaSesion !== 'opus') {
       if (esPrincipal && familiaSesion !== 'otro') {
         st.ultimoEnviado = { familia: familiaSesion, esfuerzo: esfuerzoSesion, at: await $.clock.now() }
@@ -306,10 +376,15 @@ export const register: Register = (on, options) => {
       st.ultimoNivel = t.escalado !== undefined ? 'compleja' : t.nivel
       st.stats.turnos[t.nivel] += 1
       st.actual = null
-      st.planActivo = false
       await guardarStats($)
     }
-    return next(e)
+    const r = await next(e)
+    if (e.agentId === undefined) {
+      if (st.activo) await quizasCompactar($, compactarEn)
+      st.planActivo = false
+      st.sigue = false
+    }
+    return r
   })
 
   // 5. /enrutador
@@ -330,7 +405,8 @@ export const register: Register = (on, options) => {
     return {
       text:
         `Enrutador ${st.activo ? 'encendido' : 'apagado'}. Último nivel: ${st.ultimoNivel ?? '—'}.\n` +
-        `Prefijos: !sonnet, !opus, !max. Subcomandos: on, off, stats, reset.\n` +
+        `Prefijos: !sonnet, !opus, !max, !sigue (no compactar). Subcomandos: on, off, stats, reset.\n` +
+        `Compacta antes de una tarea nueva si el contexto pasa de ${miles(compactarEn)}${compactarEn <= 0 ? ' (apagado)' : ''}; subagentes en Sonnet salvo: ${[...enOpus].join(', ') || 'ninguno'}.\n` +
         `Decide al primer pedido y con la caché caliente solo sube; la da por fría a los ${minutosFria} min.`,
     }
   })
@@ -343,6 +419,8 @@ function textoStats(s: Estadisticas): string {
     `Turnos enrutados: ${total} (trivial ${t.trivial}, simple ${t.simple}, media ${t.media}, compleja ${t.compleja})`,
     `Escaladas a Opus a medio turno: ${s.escalados}`,
     `Se quedó en el modelo anterior por caché: ${s.retenidosPorCache}`,
+    `Compactaciones antes de una tarea nueva: ${s.compactaciones} (${miles(s.tokensCompactados)} tokens de contexto que dejaron de releerse)`,
+    `Pasos de subagentes en Sonnet: ${s.pasosSubagenteSonnet}`,
     '',
     'Tokens por modelo (entrada sin caché / caché leída / caché escrita / salida):',
   ]

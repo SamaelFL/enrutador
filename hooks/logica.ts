@@ -175,3 +175,42 @@ const NOMBRE: Record<Familia, string> = { sonnet: 'Sonnet', opus: 'Opus' }
 
 export const etiqueta = (familia: Familia, esfuerzo: Esfuerzo | undefined, nivel: Nivel, nota?: string): string =>
   `⚙ ${NOMBRE[familia]}${esfuerzo === undefined ? '' : ` · ${esfuerzo}`} · ${nivel}${nota === undefined ? '' : ` (${nota})`}`
+
+// --- Contexto y subagentes (v0.2) ----------------------------------------------------
+// Medido con medir/medir.ts sobre 275 turnos reales: cambiar de modelo a media sesión no
+// ahorra (reescribe una caché enorme), pero compactar al empezar una tarea nueva y correr
+// los subagentes en Sonnet sí: 32.4% de costo equivalente de API.
+
+// "!sigue": esta tarea depende de la anterior, no compactar. Se quita del texto.
+export function leerSigue(texto: string): { sigue: boolean; texto: string } {
+  const m = /^\s*!sigue\b[ \t]*/i.exec(texto)
+  return m === null ? { sigue: false, texto } : { sigue: true, texto: texto.slice(m[0].length) }
+}
+
+// Compactar al terminar un turno cuando el contexto ya pasó el umbral. No si el pedido
+// empezó con "!sigue", en modo plan ni con el umbral en 0.
+export function debeCompactar(args: { tokens: number | undefined; umbral: number; plan: boolean; sigue: boolean }): boolean {
+  const { tokens, umbral, plan, sigue } = args
+  if (umbral <= 0 || plan || sigue || tokens === undefined) return false
+  return tokens > umbral
+}
+
+export const INSTRUCCIONES_COMPACTAR =
+  'Conserva completa la tarea en curso (qué se pidió, qué falta y en qué archivos) y lo que siga ' +
+  'vigente: decisiones tomadas, convenciones del proyecto y pendientes abiertos. Resume lo demás.'
+
+// Tipos de subagente que se quedan en Opus. Por defecto Plan: planear sí necesita al grande.
+export function tiposEnOpus(config: string): Set<string> {
+  return new Set(
+    config
+      .split(',')
+      .map(x => x.trim().toLowerCase())
+      .filter(x => x !== ''),
+  )
+}
+
+// null: no es un subagente que se pueda bajar (una bifurcación del engine, como la compactación).
+export const subagenteASonnet = (tipo: string | null, enOpus: Set<string>): boolean =>
+  tipo !== null && tipo !== '' && !enOpus.has(tipo.toLowerCase())
+
+export const miles = (n: number): string => `${Math.round(n / 1000)}k`

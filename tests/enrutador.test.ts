@@ -157,7 +157,7 @@ describe('enrutador', () => {
     expect(m.pasos[1]?.model).toBe(OPUS)
   })
 
-  test('los subagentes no se tocan', async ($, on) => {
+  test('un subagente sin tipo conocido no se toca', async ($, on) => {
     const m = mundo(on)
     await arrancar($)
     await turno($, 'explícame qué hace git stash', 't1')
@@ -238,5 +238,105 @@ describe('enrutador', () => {
     await m.reloj.advance(61 * 60_000)
     await turno($, 'qué hace git stash', 't2')
     expect(m.pasos.map(p => p.model)).toEqual([OPUS, SONNET])
+  })
+})
+
+
+// --- v0.2: compactar antes de una tarea nueva y subagentes en Sonnet ------------------
+
+function contexto(on: On, tokens: number): { compactaciones: string[] } {
+  const r = { compactaciones: [] as string[] }
+  mock.session(on)
+  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens, window: 1_000_000 }, rateLimits: [] } }))
+  on('session.compact', (_$, e) => {
+    r.compactaciones.push(e.instructions ?? '')
+    return { messages: [{ role: 'user' as const, text: 'Resumen de la conversación.', toolUses: [], toolResults: [] }], tokensBefore: tokens, tokensAfter: 20_000 }
+  })
+  return r
+}
+
+function agentes(on: On, lista: Array<{ id: string; type: string }>): void {
+  on('agent.list', () => ({ value: lista.map(a => ({ ...a, description: '', status: 'running' as const })) }))
+}
+
+describe('enrutador v2', () => {
+  test('al terminar un turno con el contexto grande, compacta', async ($, on) => {
+    const m = mundo(on)
+    const c = contexto(on, 250_000)
+    await arrancar($)
+    await turno($, 'ahora agrega la pantalla de reportes', 't1')
+    expect(c.compactaciones.length).toBe(0)
+    await cerrar($, 't1')
+    expect(c.compactaciones.length).toBe(1)
+    expect(c.compactaciones[0]).toContain('tarea en curso')
+    expect(m.avisos.some(a => a.includes('compacté'))).toBe(true)
+  })
+
+  test('con el contexto chico no compacta', async ($, on) => {
+    mundo(on)
+    const c = contexto(on, 120_000)
+    await arrancar($)
+    await turno($, 'ahora agrega la pantalla de reportes', 't1')
+    await cerrar($, 't1')
+    expect(c.compactaciones.length).toBe(0)
+  })
+
+  test('!sigue no compacta al terminar y se quita del texto', async ($, on) => {
+    const m = mundo(on)
+    const c = contexto(on, 250_000)
+    await arrancar($)
+    await turno($, '!sigue ahora conecta eso con el reporte', 't1')
+    await cerrar($, 't1')
+    expect(c.compactaciones.length).toBe(0)
+    expect(m.textos[0]).toBe('ahora conecta eso con el reporte')
+  })
+
+  test('!sigue vale solo para su turno', async ($, on) => {
+    mundo(on)
+    const c = contexto(on, 250_000)
+    await arrancar($)
+    await turno($, '!sigue conecta eso', 't1')
+    await cerrar($, 't1')
+    await turno($, 'ahora otra cosa', 't2')
+    await cerrar($, 't2')
+    expect(c.compactaciones.length).toBe(1)
+  })
+
+  test('/enrutador off no compacta', async ($, on) => {
+    mundo(on)
+    const c = contexto(on, 250_000)
+    await arrancar($)
+    await $.command.run({ command: 'enrutador', args: 'off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    await turno($, 'ahora otra cosa', 't1')
+    await cerrar($, 't1')
+    expect(c.compactaciones.length).toBe(0)
+  })
+
+  test('los subagentes corren en Sonnet', async ($, on) => {
+    const m = mundo(on, { respuesta: 'nivel: compleja\nseguro: si' })
+    agentes(on, [{ id: 'a1', type: 'Explore' }])
+    await arrancar($)
+    await turno($, 'investiga cómo se calculan los totales', 't1')
+    await paso($, 't1', 1, { agentId: 'a1' })
+    expect(m.pasos[0]?.model).toBe(OPUS)
+    expect(m.pasos[1]?.model).toBe(SONNET)
+  })
+
+  test('el subagente de planeación se queda en Opus', async ($, on) => {
+    const m = mundo(on, { respuesta: 'nivel: compleja\nseguro: si' })
+    agentes(on, [{ id: 'p1', type: 'Plan' }])
+    await arrancar($)
+    await turno($, 'planea la migración', 't1')
+    await paso($, 't1', 1, { agentId: 'p1' })
+    expect(m.pasos[1]?.model).toBe(OPUS)
+  })
+
+  test('una bifurcación del engine (sin tipo) no se toca', async ($, on) => {
+    const m = mundo(on, { respuesta: 'nivel: compleja\nseguro: si' })
+    agentes(on, [])
+    await arrancar($)
+    await turno($, 'investiga el módulo de pagos', 't1')
+    await paso($, 't1', 1, { agentId: 'fork-1' })
+    expect(m.pasos[1]?.model).toBe(OPUS)
   })
 })
