@@ -406,7 +406,7 @@ export const register: Register = (on, options) => {
       text:
         `Enrutador ${st.activo ? 'encendido' : 'apagado'}. Último nivel: ${st.ultimoNivel ?? '—'}.\n` +
         `Prefijos: !sonnet, !opus, !max, !sigue (no compactar). Subcomandos: on, off, stats, reset.\n` +
-        `Compacta antes de una tarea nueva si el contexto pasa de ${miles(compactarEn)}${compactarEn <= 0 ? ' (apagado)' : ''}; subagentes en Sonnet salvo: ${[...enOpus].join(', ') || 'ninguno'}.\n` +
+        `Compacta al terminar un turno si el contexto pasa de ${miles(compactarEn)}${compactarEn <= 0 ? ' (apagado)' : ''}; subagentes en Sonnet salvo: ${[...enOpus].join(', ') || 'ninguno'}.\n` +
         `Decide al primer pedido y con la caché caliente solo sube; la da por fría a los ${minutosFria} min.`,
     }
   })
@@ -419,7 +419,7 @@ function textoStats(s: Estadisticas): string {
     `Turnos enrutados: ${total} (trivial ${t.trivial}, simple ${t.simple}, media ${t.media}, compleja ${t.compleja})`,
     `Escaladas a Opus a medio turno: ${s.escalados}`,
     `Se quedó en el modelo anterior por caché: ${s.retenidosPorCache}`,
-    `Compactaciones antes de una tarea nueva: ${s.compactaciones} (${miles(s.tokensCompactados)} tokens de contexto que dejaron de releerse)`,
+    `Compactaciones al terminar un turno: ${s.compactaciones} (${miles(s.tokensCompactados)} tokens de contexto que dejaron de releerse)`,
     `Pasos de subagentes en Sonnet: ${s.pasosSubagenteSonnet}`,
     '',
     'Tokens por modelo (entrada sin caché / caché leída / caché escrita / salida):',
