@@ -9,6 +9,8 @@
 //   node --experimental-strip-types medir/medir.ts --sin-clasificar   # cuenta, no gasta nada
 //   node --experimental-strip-types medir/medir.ts                    # mide (llama a Haiku)
 //
+// Con ANTHROPIC_API_KEY llama a la API; sin ella, usa `claude -p` con tu sesión de Claude Code.
+//
 // Opciones: --desde AAAA-MM-DD, --hasta AAAA-MM-DD, --excluir <texto> (repetible: salta
 // proyectos cuya carpeta contenga ese texto), --dir <carpeta de proyectos>,
 // --salida <carpeta>, --modelo <id del clasificador>, --minutos-cache <n> (default 60).
@@ -17,9 +19,10 @@
 // que el enrutador. Lo que guarda en disco son totales y, en la caché del clasificador,
 // un hash de cada pedido con su nivel: nunca el texto.
 
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -237,6 +240,13 @@ const tiempo = (e: Evento): number => (e.tipo === 'resultado' ? e.t : e.p.t)
 
 type Clasificado = { nivel: Nivel; seguro: boolean; uso: Uso } | null
 
+// Lo que le cuesta al enrutador una clasificación: el sistema y el pedido, ~3.5 caracteres por
+// token, y unas 15 de respuesta.
+function usoEstimado(pedido: string, previo: string): Uso {
+  const entrada = Math.ceil((SISTEMA_CLASIFICADOR.length + promptClasificador(pedido, previo).length) / 3.5)
+  return { entrada, escritura5m: 0, escritura1h: 0, lectura: 0, salida: 15 }
+}
+
 class Clasificador {
   private cache: Record<string, Clasificado>
   private ruta: string
@@ -263,9 +273,14 @@ class Clasificador {
     return undefined
   }
 
-  async resolver(alAvanzar: (hechos: number, total: number) => void): Promise<void> {
+  // Con ANTHROPIC_API_KEY llama a la API; sin ella, usa Claude Code (`claude -p`) con tu sesión.
+  get via(): string {
     const llave = process.env.ANTHROPIC_API_KEY
-    if (llave === undefined || llave === '') throw new Error('Falta ANTHROPIC_API_KEY en el entorno.')
+    return llave !== undefined && llave !== '' ? 'API' : 'Claude Code (tu sesión)'
+  }
+
+  async resolver(alAvanzar: (hechos: number, total: number) => void): Promise<void> {
+    const llave = process.env.ANTHROPIC_API_KEY ?? ''
     const cola = [...this.pendientes.entries()]
     let hechos = 0
     const trabajador = async () => {
@@ -273,13 +288,16 @@ class Clasificador {
         const sig = cola.shift()
         if (sig === undefined) return
         const [k, { pedido, previo }] = sig
-        this.cache[k] = await this.llamar(llave, pedido, previo)
+        const r = llave !== '' ? await this.llamar(llave, pedido, previo) : await this.llamarClaude(pedido, previo)
+        // El costo del clasificador se estima con el tamaño del pedido, igual en las dos vías:
+        // `claude -p` agrega su propio contexto, que el enrutador no paga.
+        this.cache[k] = r === null ? null : { ...r, uso: usoEstimado(pedido, previo) }
         hechos += 1
         if (hechos % 25 === 0) this.guardar()
         alAvanzar(hechos, this.pendientes.size)
       }
     }
-    await Promise.all(Array.from({ length: 6 }, trabajador))
+    await Promise.all(Array.from({ length: llave !== '' ? 6 : 8 }, trabajador))
     this.pendientes.clear()
     this.guardar()
   }
@@ -319,6 +337,51 @@ class Clasificador {
     }
     this.fallas += 1
     return null
+  }
+
+  private llamarClaude(pedido: string, previo: string): Promise<Clasificado> {
+    const args = [
+      '-p', '--model', 'haiku', '--effort', 'low', '--tools', '', '--no-session-persistence',
+      '--strict-mcp-config', '--setting-sources', 'project', '--exclude-dynamic-system-prompt-sections',
+      '--system-prompt', SISTEMA_CLASIFICADOR, '--output-format', 'json', promptClasificador(pedido, previo),
+    ]
+    const env = { ...process.env }
+    delete env.ANTHROPIC_API_KEY
+    const intentar = (n: number): Promise<Clasificado> =>
+      new Promise(resolve => {
+        // cwd vacío y sin settings de usuario: no carga tus hooks, plugins ni MCP, y no guarda la sesión.
+        const hijo = spawn('claude', args, { cwd: tmpdir(), env, stdio: ['ignore', 'pipe', 'pipe'] })
+        let salida = ''
+        let errores = ''
+        const reloj = setTimeout(() => hijo.kill(), 120000)
+        hijo.stdout.on('data', d => (salida += d))
+        hijo.stderr.on('data', d => (errores += d))
+        hijo.on('error', err => {
+          clearTimeout(reloj)
+          console.error(`\n  no pude correr claude: ${err.message}`)
+          resolve(null)
+        })
+        hijo.on('close', async code => {
+          clearTimeout(reloj)
+          try {
+            const j = JSON.parse(salida)
+            if (j.is_error === true) throw new Error(String(j.result ?? 'error'))
+            this.llamadas += 1
+            const leido = parsearClasificador(String(j.result ?? ''))
+            resolve(leido === null ? null : { ...leido, uso: usoEstimado(pedido, previo) })
+          } catch (err) {
+            if (n < 2) {
+              await new Promise(res => setTimeout(res, 3000 * (n + 1)))
+              resolve(await intentar(n + 1))
+              return
+            }
+            this.fallas += 1
+            console.error(`\n  claude -p (código ${code}): ${((err as Error).message || errores).slice(0, 200)}`)
+            resolve(null)
+          }
+        })
+      })
+    return intentar(0)
   }
 
   private guardar(): void {
@@ -579,7 +642,7 @@ async function main() {
       console.log('Corre sin --sin-clasificar para medir. Lo que ya se clasificó queda en caché y no se vuelve a pagar.')
       return
     }
-    console.log(`Clasificando ${faltan} pedidos con ${o.modelo} (~$${estimado.toFixed(2)})…`)
+    console.log(`Clasificando ${faltan} pedidos con Haiku vía ${clasif.via}${clasif.via === 'API' ? ` (~$${estimado.toFixed(2)})` : '; tarda unos minutos'}…`)
     await clasif.resolver((h, n) => process.stdout.write(`\r  ${h}/${n}`))
     process.stdout.write('\n')
   }
