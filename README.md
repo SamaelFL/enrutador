@@ -1,3 +1,5 @@
+<img src="docs/cabecera.svg" alt="enrutador v2: measured on 275 turns of my own Claude Code history, it cuts API-equivalent cost by 32% ($512 to $346) by compacting the session past 200k tokens of context and running subagents on Sonnet." width="100%">
+
 # enrutador
 
 [![pruebas](https://github.com/SamaelFL/enrutador/actions/workflows/pruebas.yml/badge.svg)](https://github.com/SamaelFL/enrutador/actions/workflows/pruebas.yml) [![licencia MIT](https://img.shields.io/badge/licencia-MIT-blue)](LICENSE)
