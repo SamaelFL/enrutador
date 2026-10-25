@@ -445,6 +445,9 @@ type Politica = {
   cuidarCache: boolean
   // "Con dudas" sube un nivel. Suave: trivial con dudas → simple; simple con dudas se queda.
   dudaSuave: boolean
+  // Los subagentes que corrieron en Opus van en Sonnet. Cada subagente tiene su propio
+  // contexto, así que no reescribe la caché de la sesión principal.
+  subagentesSonnet?: boolean
 }
 
 const ACTUAL: Politica = { nombre: 'Actual', cuidarCache: true, dudaSuave: false }
@@ -454,6 +457,7 @@ const VARIANTES: Politica[] = [
   { nombre: 'Baja aunque la caché esté caliente', cuidarCache: false, dudaSuave: false },
   { nombre: 'Duda suave', cuidarCache: true, dudaSuave: true },
   { nombre: 'Las dos', cuidarCache: false, dudaSuave: true },
+  { nombre: 'Subagentes en Sonnet', cuidarCache: true, dudaSuave: false, subagentesSonnet: true },
 ]
 function dudar(nivel: Nivel, seguro: boolean, pol: Politica): Nivel {
   if (seguro || !pol.dudaSuave) return aplicarDuda(nivel, seguro)
@@ -560,10 +564,11 @@ function simular(
     const paso = ev.p
     const base = costo(paso.uso, precioDe(paso.modelo))
     if (paso.lateral) {
-      // Los subagentes no se tocan: cuestan lo mismo con y sin enrutador.
+      // Con la política actual los subagentes no se tocan: cuestan lo mismo con y sin enrutador.
+      const sub = pol.subagentesSonnet && familiaDe(paso.modelo) === 'opus' ? costo(paso.uso, PRECIOS.sonnet) : base
       if (enRango(paso.t)) {
         tot(paso.t).costoBase += base
-        tot(paso.t).costoEnrutador += base
+        tot(paso.t).costoEnrutador += sub
       }
       continue
     }
