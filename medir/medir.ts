@@ -104,6 +104,7 @@ function opciones() {
     excluir: [] as string[],
     minutos: 60,
     sinClasificar: false,
+    tendencias: false,
   }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -116,6 +117,7 @@ function opciones() {
     else if (a === '--excluir') o.excluir.push(v().toLowerCase())
     else if (a === '--minutos-cache') o.minutos = Number(v())
     else if (a === '--sin-clasificar') o.sinClasificar = true
+    else if (a === '--tendencias') o.tendencias = true
     else if (a === '--ayuda' || a === '-h') {
       console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(0, 20).join('\n'))
       process.exit(0)
@@ -163,7 +165,7 @@ function archivos(dir: string): string[] {
   return out
 }
 
-type Sesion = { id: string; proyecto: string; eventos: Evento[] }
+type Sesion = { id: string; proyecto: string; eventos: Evento[]; version: string; resumenes: number; cortes: number }
 
 function leerSesiones(dir: string, excluir: string[]): { sesiones: Sesion[]; saltadas: number } {
   const porSesion = new Map<string, Sesion>()
@@ -190,10 +192,13 @@ function leerSesiones(dir: string, excluir: string[]): { sesiones: Sesion[]; sal
       if (excluir.some(x => String(e.cwd ?? '').toLowerCase().includes(x))) continue
       let s = porSesion.get(sid)
       if (s === undefined) {
-        s = { id: sid, proyecto, eventos: [] }
+        s = { id: sid, proyecto, eventos: [], version: '', resumenes: 0, cortes: 0 }
         porSesion.set(sid, s)
       }
       const lateral = e.isSidechain === true || ruta.includes('/subagents/')
+      if (!lateral && typeof e.version === 'string') s.version = e.version
+      if (!lateral && e.isCompactSummary === true) s.resumenes += 1
+      if (!lateral && e.type === 'system' && e.subtype === 'compact_boundary') s.cortes += 1
 
       if (e.type === 'assistant') {
         const m = e.message ?? {}
@@ -657,6 +662,94 @@ function tabla(filas: string[][]): string {
   return [linea(enc), '| ' + anchos.map((a, i) => (i === 0 ? '-'.repeat(a) : '-'.repeat(a - 1) + ':')).join(' | ') + ' |', ...filas.map(linea)].join('\n')
 }
 
+// --- Tendencias -----------------------------------------------------------------------
+// Qué cambió semana a semana en cómo trabajas: tamaño del contexto, pasos por tarea, salida,
+// subagentes. Con precios reales de cada modelo y sin clasificar nada.
+
+function tendencias(sesiones: Sesion[], o: ReturnType<typeof opciones>): void {
+  type Fila = {
+    sesiones: number; turnos: number; pasos: number; contexto: number; salida: number; errores: number
+    inicial: number[]; costo: number; costoSub: number; costoSubSonnet: number; compact: number
+    versiones: Record<string, number>; esfuerzos: Record<string, number>
+  }
+  const filas = new Map<string, Fila>()
+  const fila = (t: number): Fila => {
+    const k = semanaDe(t)
+    let f = filas.get(k)
+    if (f === undefined) {
+      f = { sesiones: 0, turnos: 0, pasos: 0, contexto: 0, salida: 0, errores: 0, inicial: [], costo: 0, costoSub: 0, costoSubSonnet: 0, compact: 0, versiones: {}, esfuerzos: {} }
+      filas.set(k, f)
+    }
+    return f
+  }
+  const enRango = (t: number) => {
+    const dia = new Date(t).toISOString().slice(0, 10)
+    return (o.desde === '' || dia >= o.desde) && (o.hasta === '' || dia <= o.hasta)
+  }
+  for (const s of sesiones) {
+    const primero = s.eventos.find(e => e.tipo === 'paso' && !e.p.lateral)
+    if (primero === undefined || primero.tipo !== 'paso' || !enRango(primero.p.t)) continue
+    const f0 = fila(primero.p.t)
+    f0.sesiones += 1
+    const u0 = primero.p.uso
+    f0.inicial.push(u0.entrada + u0.lectura + u0.escritura5m + u0.escritura1h)
+    f0.compact += Math.max(s.resumenes, s.cortes)
+    if (s.version !== '') f0.versiones[s.version] = (f0.versiones[s.version] ?? 0) + 1
+    for (const e of s.eventos) {
+      const t = e.tipo === 'resultado' ? e.t : e.p.t
+      if (!enRango(t)) continue
+      const f = fila(t)
+      if (e.tipo === 'pedido') f.turnos += 1
+      else if (e.tipo === 'resultado') f.errores += e.error ? 1 : 0
+      else {
+        const u = e.p.uso
+        const c = costo(u, precioDe(e.p.modelo))
+        f.costo += c
+        if (e.p.lateral) {
+          f.costoSub += c
+          if (familiaDe(e.p.modelo) !== 'opus') f.costoSubSonnet += c
+        } else {
+          f.pasos += 1
+          f.contexto += u.entrada + u.lectura + u.escritura5m + u.escritura1h
+          f.salida += u.salida
+          const esf = e.p.esfuerzo ?? 'sin dato'
+          f.esfuerzos[esf] = (f.esfuerzos[esf] ?? 0) + 1
+        }
+      }
+    }
+  }
+  const k = (n: number) => `${(n / 1000).toFixed(0)}k`
+  const mediana = (xs: number[]) => {
+    if (xs.length === 0) return 0
+    const v = [...xs].sort((a, b) => a - b)
+    return v[Math.floor(v.length / 2)] ?? 0
+  }
+  const masComun = (r: Record<string, number>) => Object.entries(r).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—'
+  const enc = ['Semana', 'Sesiones', 'Turnos', 'Pasos/turno', 'Contexto al iniciar', 'Contexto/paso', 'Salida/turno', 'Errores/turno', 'Costo/turno', 'En subagentes', 'Subagentes no-Opus', 'Compactaciones', 'Esfuerzo', 'Versión']
+  const rows = [...filas.keys()].sort().map(sem => {
+    const f = filas.get(sem) as Fila
+    const t = Math.max(f.turnos, 1)
+    return [
+      sem, String(f.sesiones), String(f.turnos), (f.pasos / t).toFixed(1), k(mediana(f.inicial)),
+      k(f.contexto / Math.max(f.pasos, 1)), k(f.salida / t), (f.errores / t).toFixed(1), usd(f.costo / t),
+      pct(f.costoSub, f.costo), pct(f.costoSubSonnet, f.costoSub), String(f.compact), masComun(f.esfuerzos), masComun(f.versiones),
+    ]
+  })
+  const anchos = enc.map((_, i) => Math.max(...[enc, ...rows].map(r => (r[i] ?? '').length)))
+  const linea = (r: string[]) => '| ' + r.map((c, i) => (i === 0 ? c.padEnd(anchos[i] ?? 0) : c.padStart(anchos[i] ?? 0))).join(' | ') + ' |'
+  const tabla = [linea(enc), '| ' + anchos.map((a, i) => (i === 0 ? '-'.repeat(a) : '-'.repeat(a - 1) + ':')).join(' | ') + ' |', ...rows.map(linea)].join('\n')
+  console.log('\nTendencias por semana (todas las sesiones, precios reales de cada modelo):\n')
+  console.log(tabla)
+  console.log([
+    '',
+    '· Contexto al iniciar: tokens del primer paso de cada sesión (sistema, herramientas, CLAUDE.md, MCP y tu primer pedido), mediana.',
+    '· Contexto/paso: cuánto relee el modelo en cada paso del hilo principal. Es lo que más pesa en el costo de sesiones largas.',
+    '· En subagentes: parte del costo que se fue a subagentes; Subagentes no-Opus: de eso, cuánto corrió en Sonnet o Haiku.',
+  ].join('\n'))
+  writeFileSync(join(o.salida, 'tendencias.md'), '# Tendencias\n\n' + tabla + '\n')
+  console.log(`\nGuardado en ${join(o.salida, 'tendencias.md')}.`)
+}
+
 // --- Main -----------------------------------------------------------------------------
 
 async function main() {
@@ -672,6 +765,10 @@ async function main() {
   const { sesiones, saltadas } = leerSesiones(o.dir, o.excluir)
   const enOpus = sesiones.filter(s => s.eventos.some(e => e.tipo === 'paso' && !e.p.lateral && familiaDe(e.p.modelo) === 'opus'))
   console.log(`${sesiones.length} sesiones (${enOpus.length} en Opus; las demás no las tocaría el enrutador).${saltadas > 0 ? ` Archivos excluidos: ${saltadas}.` : ''}`)
+  if (o.tendencias) {
+    tendencias(sesiones, o)
+    return
+  }
 
   // Qué pedidos podría mandar al clasificador. Se piden todos de una vez: cuáles llegan de
   // verdad al clasificador depende de las decisiones anteriores, y eso se resuelve al simular.
