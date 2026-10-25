@@ -433,11 +433,34 @@ function semanaDe(t: number): string {
 
 type Decision = { nivel: Nivel; forzado: boolean; esfuerzo?: Esfuerzo; clasificado: boolean }
 
+// Variantes de la política para comparar contra la actual sin tocar el enrutador.
+type Politica = {
+  nombre: string
+  // Con Opus alto y caché caliente no clasifica, y no baja de modelo con la caché caliente.
+  cuidarCache: boolean
+  // "Con dudas" sube un nivel. Suave: trivial con dudas → simple; simple con dudas se queda.
+  dudaSuave: boolean
+}
+
+const ACTUAL: Politica = { nombre: 'Actual', cuidarCache: true, dudaSuave: false }
+
+const VARIANTES: Politica[] = [
+  ACTUAL,
+  { nombre: 'Baja aunque la caché esté caliente', cuidarCache: false, dudaSuave: false },
+  { nombre: 'Duda suave', cuidarCache: true, dudaSuave: true },
+  { nombre: 'Las dos', cuidarCache: false, dudaSuave: true },
+]
+function dudar(nivel: Nivel, seguro: boolean, pol: Politica): Nivel {
+  if (seguro || !pol.dudaSuave) return aplicarDuda(nivel, seguro)
+  return nivel === 'trivial' || nivel === 'simple' ? 'simple' : aplicarDuda(nivel, seguro)
+}
+
 function simular(
   s: Sesion,
   clasif: Clasificador,
   o: ReturnType<typeof opciones>,
   porSemana: Map<string, Totales>,
+  pol: Politica = ACTUAL,
 ): void {
   const enRango = (t: number) => {
     const dia = new Date(t).toISOString().slice(0, 10)
@@ -484,7 +507,7 @@ function simular(
         if (regla !== null) {
           d = { nivel: regla.nivel, forzado: false, clasificado: false }
           motivo = `regla: ${regla.motivo} → Opus`
-        } else if (enElTope(ultimoEnviado, p.t, o.minutos)) {
+        } else if (pol.cuidarCache && enElTope(ultimoEnviado, p.t, o.minutos)) {
           d = { nivel: ultimoNivel ?? 'compleja', forzado: false, clasificado: false }
           motivo = 'ya en Opus alto con caché caliente: no clasifica'
         } else {
@@ -493,11 +516,11 @@ function simular(
             d = { nivel: 'compleja', forzado: false, clasificado: r !== undefined }
             motivo = 'clasificador sin respuesta → Opus'
           } else {
-            let nivel = aplicarDuda(r.nivel, r.seguro)
+            let nivel = dudar(r.nivel, r.seguro, pol)
             const piso = pisoPorPalabras(p.texto)
             if (piso !== null) nivel = maxNivel(nivel, piso)
             d = { nivel, forzado: false, clasificado: true }
-            motivo = `clasificador: ${r.nivel}${r.seguro ? '' : ' con dudas'}${piso !== null && nivel !== aplicarDuda(r.nivel, r.seguro) ? ' + palabra delicada' : ''} → ${nivel}`
+            motivo = `clasificador: ${r.nivel}${r.seguro ? '' : ' con dudas'}${piso !== null && nivel !== dudar(r.nivel, r.seguro, pol) ? ' + palabra delicada' : ''} → ${nivel}`
             if (enRango(p.t)) tot(p.t).costoClasificador += costo(r.uso, PRECIOS.haiku)
           }
           if (enRango(p.t)) tot(p.t).clasificaciones += 1
@@ -550,7 +573,7 @@ function simular(
         let esf: Esfuerzo = turno.esfuerzo ?? destino.esfuerzo
         if (destino.familia === 'opus' && paso.esfuerzo !== undefined) esf = maxEsfuerzo(esf, paso.esfuerzo)
         let fam: Familia = destino.familia
-        if (!turno.forzado && !turno.plan && retenerPorCache({ destino: { familia: fam, esfuerzo: esf }, ultimo: ultimoEnviado, ahora: paso.t, minutosFria: o.minutos })) {
+        if (pol.cuidarCache && !turno.forzado && !turno.plan && retenerPorCache({ destino: { familia: fam, esfuerzo: esf }, ultimo: ultimoEnviado, ahora: paso.t, minutosFria: o.minutos })) {
           fam = ultimoEnviado?.familia ?? fam
           esf = ultimoEnviado?.esfuerzo ?? esf
           if (enRango(turno.t)) {
@@ -704,7 +727,23 @@ async function main() {
   console.log(`Ahorro total: ${pct(total.costoBase - conClasif, total.costoBase)} (${usd(total.costoBase)} → ${usd(conClasif)}).\n`)
   for (const n of notas) console.log(`· ${n}`)
 
-  console.log('\nPor qué decidió así (turnos):')
+  // Las mismas decisiones con otras políticas: usa lo ya clasificado, no gasta nada.
+  console.log('\nSi se afinara el enrutador (mismo historial):')
+  const filasVar: string[][] = []
+  for (const pol of VARIANTES) {
+    const m = new Map<string, Totales>()
+    for (const s of enOpus) simular(s, clasif, o, m, pol)
+    const x = sumar([...m.values()])
+    const con = x.costoEnrutador + x.costoClasificador
+    filasVar.push([pol.nombre, pct(x.turnosSonnet, x.turnos), usd(x.costoBase), usd(con), usd(x.costoReescritura), pct(x.costoBase - con, x.costoBase)])
+  }
+  const encV = ['Política', 'Turnos en Sonnet', 'Solo Opus', 'Con enrutador', 'Caché reescrita', 'Ahorro']
+  const anchosV = encV.map((_, i) => Math.max(...[encV, ...filasVar].map(f => (f[i] ?? '').length)))
+  const lineaV = (f: string[]) => '| ' + f.map((c, i) => (i === 0 ? c.padEnd(anchosV[i] ?? 0) : c.padStart(anchosV[i] ?? 0))).join(' | ') + ' |'
+  const tablaV = [lineaV(encV), '| ' + anchosV.map((a, i) => (i === 0 ? '-'.repeat(a) : '-'.repeat(a - 1) + ':')).join(' | ') + ' |', ...filasVar.map(lineaV)].join('\n')
+  console.log(tablaV)
+
+  console.log('\nPor qué decidió así con la política actual (turnos):')
   for (const [k, n] of Object.entries(total.motivos).sort((a, b) => (a[0].split(' · ')[0] ?? '').localeCompare(b[0].split(' · ')[0] ?? '') || b[1] - a[1])) {
     console.log(`  ${String(n).padStart(4)}  ${k}`)
   }
