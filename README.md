@@ -28,6 +28,18 @@ The decision logic is pure functions in `hooks/logica.ts`, tested on their own; 
 - `/enrutador` shows the status · `/enrutador on|off` · `/enrutador stats` (cache tokens per model) · `/enrutador reset`.
 - The status line shows the decision, for example `⚙ Sonnet · medium · simple (clasificador)`.
 
+## Measure it on your own history
+
+`medir/medir.ts` replays your Claude Code history (`~/.claude/projects`) through the router's own logic and classifier, and compares the API-equivalent cost of Opus-only against routed. It counts the cache rewrites that model switches cause and the classifier calls. Requires Node 22.6 or newer and `ANTHROPIC_API_KEY`.
+
+```bash
+cd enrutador
+node --experimental-strip-types medir/medir.ts --sin-clasificar   # counts prompts, spends nothing
+node --experimental-strip-types medir/medir.ts                    # measures (a few cents of Haiku)
+```
+
+Options: `--desde` / `--hasta` (YYYY-MM-DD), `--excluir <text>` to skip projects. It only sends each prompt and the end of the previous reply to Haiku, the same as the router, and only writes totals to disk.
+
 ## Install
 
 Requires Claude Code 2.1.296 or newer.
@@ -78,6 +90,18 @@ Uso Claude Code todo el día en Opus. La mayoría de mis pedidos son chicos, per
 
 - Prefijos: `!sonnet`, `!opus`, `!max`.
 - `/enrutador` estado · `/enrutador on|off` · `/enrutador stats` (tokens de caché por modelo) · `/enrutador reset`.
+
+### Mídelo con tu historial
+
+`medir/medir.ts` repite tu historial de Claude Code (`~/.claude/projects`) con la misma lógica y el mismo clasificador del enrutador, y compara el costo equivalente de API de solo Opus contra el de con enrutador, incluyendo la caché que se reescribe al cambiar de modelo. Necesita Node 22.6 o más nuevo y `ANTHROPIC_API_KEY`.
+
+```bash
+cd enrutador
+node --experimental-strip-types medir/medir.ts --sin-clasificar   # cuenta los pedidos, no gasta nada
+node --experimental-strip-types medir/medir.ts                    # mide (unos centavos de Haiku)
+```
+
+Opciones: `--desde` / `--hasta` (AAAA-MM-DD), `--excluir <texto>` para saltar proyectos. Solo manda a Haiku el pedido y el final de la respuesta anterior, igual que el enrutador, y en disco solo guarda totales.
 
 ### Instalar
 
