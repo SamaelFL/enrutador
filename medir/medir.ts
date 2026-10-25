@@ -402,6 +402,7 @@ type Totales = {
   costoEnrutador: number
   costoClasificador: number
   costoReescritura: number
+  motivos: Record<string, number>
 }
 
 const totalesVacios = (): Totales => ({
@@ -415,7 +416,12 @@ const totalesVacios = (): Totales => ({
   costoEnrutador: 0,
   costoClasificador: 0,
   costoReescritura: 0,
+  motivos: {},
 })
+
+function contar(t: Totales, clave: string): void {
+  t.motivos[clave] = (t.motivos[clave] ?? 0) + 1
+}
 
 function semanaDe(t: number): string {
   const d = new Date(t)
@@ -465,29 +471,45 @@ function simular(
       cerrar()
       const p = ev.p
       let d: Decision
+      let motivo: string
       const forzado = leerForzado(p.texto)
-      if (forzado !== null) d = { nivel: forzado.nivel, esfuerzo: forzado.esfuerzo, forzado: true, clasificado: false }
-      else if (esSeguimiento(p.texto) && ultimoNivel !== null) d = { nivel: ultimoNivel, forzado: false, clasificado: false }
-      else {
+      if (forzado !== null) {
+        d = { nivel: forzado.nivel, esfuerzo: forzado.esfuerzo, forzado: true, clasificado: false }
+        motivo = 'prefijo manual'
+      } else if (esSeguimiento(p.texto) && ultimoNivel !== null) {
+        d = { nivel: ultimoNivel, forzado: false, clasificado: false }
+        motivo = 'seguimiento ("dale", "sí"…): hereda el nivel'
+      } else {
         const regla = porReglas(p.texto, p.adjuntos)
-        if (regla !== null) d = { nivel: regla.nivel, forzado: false, clasificado: false }
-        else if (enElTope(ultimoEnviado, p.t, o.minutos)) d = { nivel: ultimoNivel ?? 'compleja', forzado: false, clasificado: false }
-        else {
+        if (regla !== null) {
+          d = { nivel: regla.nivel, forzado: false, clasificado: false }
+          motivo = `regla: ${regla.motivo} → Opus`
+        } else if (enElTope(ultimoEnviado, p.t, o.minutos)) {
+          d = { nivel: ultimoNivel ?? 'compleja', forzado: false, clasificado: false }
+          motivo = 'ya en Opus alto con caché caliente: no clasifica'
+        } else {
           const r = clasif.buscar(p.texto, p.previo)
-          if (r === undefined || r === null) d = { nivel: 'compleja', forzado: false, clasificado: r !== undefined }
-          else {
+          if (r === undefined || r === null) {
+            d = { nivel: 'compleja', forzado: false, clasificado: r !== undefined }
+            motivo = 'clasificador sin respuesta → Opus'
+          } else {
             let nivel = aplicarDuda(r.nivel, r.seguro)
             const piso = pisoPorPalabras(p.texto)
             if (piso !== null) nivel = maxNivel(nivel, piso)
             d = { nivel, forzado: false, clasificado: true }
+            motivo = `clasificador: ${r.nivel}${r.seguro ? '' : ' con dudas'}${piso !== null && nivel !== aplicarDuda(r.nivel, r.seguro) ? ' + palabra delicada' : ''} → ${nivel}`
             if (enRango(p.t)) tot(p.t).costoClasificador += costo(r.uso, PRECIOS.haiku)
           }
           if (enRango(p.t)) tot(p.t).clasificaciones += 1
         }
       }
-      if (p.plan) d = { ...d, nivel: 'compleja' }
+      if (p.plan) {
+        d = { ...d, nivel: 'compleja' }
+        motivo = 'modo plan → Opus'
+      }
       turno = { ...d, plan: p.plan, escalado: false, seguidos: 0, totales: 0, t: p.t }
       if (enRango(p.t)) {
+        contar(tot(p.t), `Decisión · ${motivo}`)
         tot(p.t).turnos += 1
         tot(p.t).sesiones.add(s.id)
       }
@@ -523,6 +545,7 @@ function simular(
     let esfuerzo: Esfuerzo | undefined = paso.esfuerzo
     if (turno !== null) {
       if (turno.elegido === undefined) {
+        if (enRango(turno.t)) contar(tot(turno.t), `Esfuerzo de la sesión · ${paso.esfuerzo ?? 'sin dato'}`)
         const destino = DESTINO[turno.nivel]
         let esf: Esfuerzo = turno.esfuerzo ?? destino.esfuerzo
         if (destino.familia === 'opus' && paso.esfuerzo !== undefined) esf = maxEsfuerzo(esf, paso.esfuerzo)
@@ -530,7 +553,10 @@ function simular(
         if (!turno.forzado && !turno.plan && retenerPorCache({ destino: { familia: fam, esfuerzo: esf }, ultimo: ultimoEnviado, ahora: paso.t, minutosFria: o.minutos })) {
           fam = ultimoEnviado?.familia ?? fam
           esf = ultimoEnviado?.esfuerzo ?? esf
-          if (enRango(turno.t)) tot(turno.t).retenidos += 1
+          if (enRango(turno.t)) {
+            tot(turno.t).retenidos += 1
+            contar(tot(turno.t), 'Decisión · iba a Sonnet pero la caché lo dejó en Opus')
+          }
         }
         turno.elegido = fam
         turno.esfElegido = esf
@@ -582,6 +608,7 @@ function sumar(xs: Totales[]): Totales {
     t.costoEnrutador += x.costoEnrutador
     t.costoClasificador += x.costoClasificador
     t.costoReescritura += x.costoReescritura
+    for (const [k, n] of Object.entries(x.motivos)) t.motivos[k] = (t.motivos[k] ?? 0) + n
   }
   return t
 }
@@ -676,6 +703,11 @@ async function main() {
   console.log('\n' + t + '\n')
   console.log(`Ahorro total: ${pct(total.costoBase - conClasif, total.costoBase)} (${usd(total.costoBase)} → ${usd(conClasif)}).\n`)
   for (const n of notas) console.log(`· ${n}`)
+
+  console.log('\nPor qué decidió así (turnos):')
+  for (const [k, n] of Object.entries(total.motivos).sort((a, b) => (a[0].split(' · ')[0] ?? '').localeCompare(b[0].split(' · ')[0] ?? '') || b[1] - a[1])) {
+    console.log(`  ${String(n).padStart(4)}  ${k}`)
+  }
 
   const resumen = [
     '# Medición del enrutador',
