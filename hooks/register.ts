@@ -71,6 +71,8 @@ type Estado = {
   ultimoNivel: Nivel | null
   ultimoEnviado: Enviado | null
   planActivo: boolean
+  // Se vio el aviso de modo plan en el turno en curso: el siguiente turno arranca en modo plan.
+  planVisto: boolean
   stats: Estadisticas
   // Tipo de cada subagente por id; null si no es uno de la lista (una bifurcación del engine).
   tipos: Map<string, string | null>
@@ -85,6 +87,7 @@ const st: Estado = {
   ultimoNivel: null,
   ultimoEnviado: null,
   planActivo: false,
+  planVisto: false,
   stats: estadisticasVacias(),
   tipos: new Map(),
   sigue: false,
@@ -186,6 +189,7 @@ export const register: Register = (on, options) => {
   st.pendiente = null
   st.actual = null
   st.planActivo = false
+  st.planVisto = false
 
   on('session.start', async ($, e, next) => {
     st.activo = (await $.store.get('activo')) !== false
@@ -258,11 +262,19 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Modo plan: el engine agrega su aviso en cada turno planeando.
-  on('session.append', ($, e, next) => {
-    const nombre = e.message.name
-    if (e.agentId === undefined && typeof nombre === 'string' && /^plan_mode/.test(nombre)) {
-      st.planActivo = nombre !== 'plan_mode_exit'
+  // Modo plan: mientras dura, el engine inyecta su aviso en cada turno. Se lee en
+  // prompt.attachment y no en session.append, que otros plugins (los de seguridad
+  // de una organización) pueden pasar de largo. Como el aviso puede llegar después
+  // del primer paso del turno, el turno siguiente arranca ya en modo plan.
+  on('prompt.attachment', ($, e, next) => {
+    if (e.agentId === undefined) {
+      if (e.type === 'plan_mode' || e.type === 'plan_mode_reentry') {
+        st.planActivo = true
+        st.planVisto = true
+      } else if (e.type === 'plan_mode_exit') {
+        st.planActivo = false
+        st.planVisto = false
+      }
     }
     return next(e)
   })
@@ -381,7 +393,8 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if (e.agentId === undefined) {
       if (st.activo) await quizasCompactar($, compactarEn)
-      st.planActivo = false
+      st.planActivo = st.planVisto
+      st.planVisto = false
       st.sigue = false
     }
     return r

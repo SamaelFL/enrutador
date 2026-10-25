@@ -1,5 +1,11 @@
 # Cambios
 
+## 0.2.1 · 2026-10-25
+
+- El modo plan se detecta en `prompt.attachment` en lugar de `session.append`. Algunos plugins de seguridad de organización pasan `session.append` de largo y Claude Code avisaba "its session.append hook was skipped"; con eso el enrutador no veía el modo plan.
+- Si el aviso del modo plan llega después del primer paso de un turno, el turno siguiente arranca ya en modo plan (Opus alto, sin compactar).
+- 28 pruebas.
+
 ## 0.2.0 · 2026-10-25
 
 Medida con 6 semanas de historial real (37 sesiones, 275 turnos): **32.4% menos costo equivalente de API** ($512 → $346).

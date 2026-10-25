@@ -1,6 +1,6 @@
 {
   "name": "enrutador",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Compacta la sesión antes de una tarea nueva cuando el contexto es grande, corre los subagentes en Sonnet y baja de Opus a Sonnet lo fácil; ante la duda se queda en Opus.",
   "userConfig": {
     "minutosCacheFria": {

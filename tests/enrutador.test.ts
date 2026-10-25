@@ -22,6 +22,7 @@ function mundo(on: On, opciones: { respuesta?: string | null; errores?: boolean 
   mock.store(on)
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.messages', () => ({ value: [] }))
+  on('prompt.attachment', (_$, e) => ({ text: e.text }))
   on('model.complete', () => {
     m.clasificaciones += 1
     const r = m.respuestas.shift() ?? opciones.respuesta
@@ -68,6 +69,13 @@ async function turno($: Engine, texto: string, id: string): Promise<void> {
   await $.prompt.submit({ text: texto, wait: false, origin: { kind: 'composer' } })
   await $.turn.start({ text: texto, turnId: id })
   await paso($, id, 0)
+}
+
+async function avisoPlan($: Engine, type: 'plan_mode' | 'plan_mode_exit', agentId?: string): Promise<void> {
+  const detail = type === 'plan_mode'
+    ? { reminder: 'full' as const, planFilePath: '/tmp/plan.md', hasPlan: false }
+    : { planFilePath: '/tmp/plan.md', hasPlan: false }
+  await $.prompt.attachment({ type, text: 'aviso', origin: { kind: 'engine' }, detail, ...(agentId === undefined ? {} : { agentId }) } as never)
 }
 
 async function cerrar($: Engine, id: string): Promise<void> {
@@ -201,16 +209,47 @@ describe('enrutador', () => {
     const m = mundo(on)
     await arrancar($)
     await $.prompt.submit({ text: 'explícame qué hace git stash', wait: false, origin: { kind: 'composer' } })
-    await $.session.append({
-      door: 'attachment',
-      origin: { kind: 'engine' },
-      uuid: 'a1',
-      message: { type: 'attachment', name: 'plan_mode', content: [] },
-    })
+    await avisoPlan($, 'plan_mode')
     await $.turn.start({ text: 'x', turnId: 't1' })
     await paso($, 't1', 0)
     expect(m.pasos[0]?.model).toBe(OPUS)
     expect(m.pasos[0]?.effort).toBe('high')
+  })
+
+  test('el turno que sigue a uno en modo plan arranca en Opus alto aunque el aviso llegue tarde', async ($, on) => {
+    const m = mundo(on)
+    await arrancar($)
+    await turno($, 'explícame qué hace git stash', 't1')
+    await avisoPlan($, 'plan_mode')
+    await cerrar($, 't1')
+    await turno($, 'y git stash pop', 't2')
+    expect(m.pasos[1]?.model).toBe(OPUS)
+    expect(m.pasos[1]?.effort).toBe('high')
+  })
+
+  test('al salir del modo plan vuelve a decidir normal', async ($, on) => {
+    const m = mundo(on)
+    await arrancar($)
+    await turno($, 'explícame qué hace git stash', 't1')
+    await avisoPlan($, 'plan_mode')
+    await cerrar($, 't1')
+    await $.prompt.submit({ text: 'y git stash pop', wait: false, origin: { kind: 'composer' } })
+    await avisoPlan($, 'plan_mode_exit')
+    await $.turn.start({ text: 'y git stash pop', turnId: 't2' })
+    await paso($, 't2', 0)
+    await cerrar($, 't2')
+    await turno($, 'y git stash list', 't3')
+    expect(m.pasos[2]?.model).toBe(SONNET)
+  })
+
+  test('el aviso de un subagente no cuenta', async ($, on) => {
+    const m = mundo(on)
+    await arrancar($)
+    await $.prompt.submit({ text: 'explícame qué hace git stash', wait: false, origin: { kind: 'composer' } })
+    await avisoPlan($, 'plan_mode', 'sub1')
+    await $.turn.start({ text: 'x', turnId: 't1' })
+    await paso($, 't1', 0)
+    expect(m.pasos[0]?.model).toBe(SONNET)
   })
 
   test('por sesión: decide al inicio, sube cuando hace falta y ya no baja', async ($, on) => {
@@ -277,6 +316,16 @@ describe('enrutador v2', () => {
     const c = contexto(on, 120_000)
     await arrancar($)
     await turno($, 'ahora agrega la pantalla de reportes', 't1')
+    await cerrar($, 't1')
+    expect(c.compactaciones.length).toBe(0)
+  })
+
+  test('en modo plan no compacta al terminar el turno', async ($, on) => {
+    mundo(on)
+    const c = contexto(on, 250_000)
+    await arrancar($)
+    await turno($, 'ahora agrega la pantalla de reportes', 't1')
+    await avisoPlan($, 'plan_mode')
     await cerrar($, 't1')
     expect(c.compactaciones.length).toBe(0)
   })
