@@ -452,6 +452,8 @@ type Politica = {
   // compactación cuesta leer todo el contexto, escribir un resumen y volver a escribir la
   // caché; después cada paso relee el resumen en vez de toda la conversación.
   compactarEn?: number
+  // Solo compactar en el primer paso de una tarea nueva (no a media tarea ni en un "dale").
+  soloTareaNueva?: boolean
 }
 
 const RESUMEN_TOKENS = 12000 // tamaño del resumen que deja una compactación
@@ -468,6 +470,8 @@ const VARIANTES: Politica[] = [
   { nombre: 'Compactar al llegar a 300k', cuidarCache: true, dudaSuave: false, compactarEn: 300000 },
   { nombre: 'Compactar al llegar a 200k', cuidarCache: true, dudaSuave: false, compactarEn: 200000 },
   { nombre: 'Compactar a 200k + subagentes en Sonnet', cuidarCache: true, dudaSuave: false, compactarEn: 200000, subagentesSonnet: true },
+  { nombre: 'Compactar a 200k solo al iniciar tarea nueva', cuidarCache: true, dudaSuave: false, compactarEn: 200000, soloTareaNueva: true },
+  { nombre: 'Lo anterior + subagentes en Sonnet', cuidarCache: true, dudaSuave: false, compactarEn: 200000, soloTareaNueva: true, subagentesSonnet: true },
 ]
 function dudar(nivel: Nivel, seguro: boolean, pol: Politica): Nivel {
   if (seguro || !pol.dudaSuave) return aplicarDuda(nivel, seguro)
@@ -504,7 +508,7 @@ function simular(
   let recorte = 0
   // Contexto inicial de la sesión (sistema, herramientas, CLAUDE.md): sobrevive a la compactación.
   let contextoBase = -1
-  let turno: (Decision & { plan: boolean; elegido?: Familia; esfElegido?: Esfuerzo; escalado: boolean; seguidos: number; totales: number; t: number }) | null = null
+  let turno: (Decision & { plan: boolean; nueva: boolean; primerPaso: boolean; elegido?: Familia; esfElegido?: Esfuerzo; escalado: boolean; seguidos: number; totales: number; t: number }) | null = null
 
   const cerrar = () => {
     if (turno === null) return
@@ -553,7 +557,7 @@ function simular(
         d = { ...d, nivel: 'compleja' }
         motivo = 'modo plan → Opus'
       }
-      turno = { ...d, plan: p.plan, escalado: false, seguidos: 0, totales: 0, t: p.t }
+      turno = { ...d, plan: p.plan, nueva: !motivo.startsWith('seguimiento'), primerPaso: true, escalado: false, seguidos: 0, totales: 0, t: p.t }
       if (enRango(p.t)) {
         contar(tot(p.t), `Decisión · ${motivo}`)
         tot(p.t).turnos += 1
@@ -617,7 +621,8 @@ function simular(
     if (pol.compactarEn !== undefined) {
       const contexto = uso.entrada + uso.lectura + uso.escritura5m + uso.escritura1h
       if (contextoBase < 0) contextoBase = contexto
-      if (contexto - recorte > pol.compactarEn) {
+      const puede = !pol.soloTareaNueva || (turno !== null && turno.primerPaso && turno.nueva)
+      if (puede && contexto - recorte > pol.compactarEn) {
         // Compactar: leer todo, escribir el resumen y reescribir la caché con base + resumen.
         const p = PRECIOS[familia]
         const extra = ((contexto - recorte) * p.lectura + RESUMEN_SALIDA * p.salida + (contextoBase + RESUMEN_TOKENS) * p.escritura1h) / 1e6
@@ -629,6 +634,7 @@ function simular(
       }
       if (recorte > 0) uso = { ...uso, lectura: Math.max(0, uso.lectura - recorte) }
     }
+    if (turno !== null) turno.primerPaso = false
     let simulado = costo(uso, PRECIOS[familia])
     // Cambiar de modelo reescribe la caché: lo que este paso leía de caché el otro modelo no
     // lo tiene. Si ese modelo se usó hace menos de una hora, su caché sigue viva y solo falta
