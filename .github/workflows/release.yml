@@ -3,6 +3,11 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versión a publicar, por ejemplo v0.1.0 (debe tener su sección en el CHANGELOG)"
+        required: true
 
 permissions:
   contents: write
@@ -10,16 +15,23 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Notas de la versión (del CHANGELOG)
         run: |
-          v="${GITHUB_REF_NAME#v}"
+          v="${TAG#v}"
           awk -v v="$v" '/^## /{p = (index($0, "## " v " ") == 1); next} p' CHANGELOG.md > notas.md
           test -s notas.md
 
       - name: Publicar el release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notas.md --verify-tag
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            gh release create "$TAG" --title "$TAG" --notes-file notas.md --target "$GITHUB_SHA"
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file notas.md --verify-tag
+          fi
