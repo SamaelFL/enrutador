@@ -1,5 +1,7 @@
 # enrutador
 
+[![pruebas](https://github.com/SamaelFL/enrutador/actions/workflows/pruebas.yml/badge.svg)](https://github.com/SamaelFL/enrutador/actions/workflows/pruebas.yml) [![licencia MIT](https://img.shields.io/badge/licencia-MIT-blue)](LICENSE)
+
 A model router for Claude Code. Your session stays on Opus, but easy requests go to Sonnet and the effort level adapts to each task. When in doubt, it stays on Opus.
 
 [Español abajo](#español)
